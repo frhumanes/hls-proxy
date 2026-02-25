@@ -3,12 +3,15 @@
 import argparse
 import copy
 import errno
+import logging
 import os
 import re
 import subprocess
 import urlparse
 from pprint import pformat
 from sys import argv
+
+log = logging.getLogger("hlsproxy")
 
 from twisted.internet import defer
 from twisted.internet.task import react
@@ -150,7 +153,7 @@ class HlsPlaylist:
                     # print "Unknown tag: ", key
                     pass
             else:
-                print "Dangling playlit item: ", line
+                log.debug("Dangling playlist item: %s", line)
         if len(self.items) == 0 and len(self.variants) == 0:
             self.errors.append("No items in the playlist")
 
@@ -382,25 +385,20 @@ class HlsProxy:
     def run(self, hlsPlaylist):
         self.finished = defer.Deferred()
         self.srvPlaylistUrl = hlsPlaylist
+        log.info("Starting proxy for %s", hlsPlaylist)
         self.refreshPlaylist()
         return self.finished
 
     def cbRequest(self, response):
-        if self.verbose:
-            print "Response version:", response.version
-            print "Response code:", response.code
-            print "Response phrase:", response.phrase
-            print "Response headers:"
-            print pformat(list(response.headers.getAllRawHeaders()))
+        log.debug("Response: %s %s %s", response.version, response.code, response.phrase)
+        log.debug("Response headers: %s", pformat(list(response.headers.getAllRawHeaders())))
         d = self.reqQ.readBody(response)
         d.addCallback(self.cbBody)
         d.addErrback(self.onGetPlaylistError)
         return d
 
     def cbBody(self, body):
-        if self.verbose:
-            print "Response body:"
-            print body
+        log.debug("Response body: %s", body)
         playlist = HlsPlaylist()
         playlist.fromStr(body, self.srvPlaylistUrl)
         self._clientPlaylistText = body
@@ -422,10 +420,7 @@ class HlsProxy:
         if playlist.isValid():
             self.onValidPlaylist(playlist)
         else:
-            print "The following errors where encountered while parsing the server playlist:"
-            for err in playlist.errors:
-                print "\t", err
-            print "Invalid playlist. Retrying after default interval of 2s"
+            log.warning("Invalid playlist (errors: %s). Retrying after 2s", playlist.errors)
             self.reactor.callLater(2, self.retryPlaylist)
 
     def onValidPlaylist(self, playlist):
@@ -437,7 +432,7 @@ class HlsProxy:
             ):
                 self.requestResource(playlist.encryption.uri, "key")
             else:
-                print "Unsupported encryption method ", playlist.encryption.method, "uri", playlist.encryption.uri
+                log.warning("Unsupported encryption method %s uri %s", playlist.encryption.method, playlist.encryption.uri)
 
         if len(playlist.variants) == 0:
             self.onSegmentPlaylist(playlist)
@@ -452,15 +447,13 @@ class HlsProxy:
                     try:
                         os.unlink(self.getSegmentFilename(item))
                     except:
-                        print "Warning. Cannot remove fragment ", self.getSegmentFilename(
-                            item
-                        ), ". Probably it wasn't downloaded in time."
+                        log.warning("Cannot remove fragment %s. Probably it wasn't downloaded in time.", self.getSegmentFilename(item))
         # request new ones
         for item in playlist.items:
             if self.clientPlaylist.getItem(item.mediaSequence) is None:
                 filename = self.getSegmentFilename(item)
                 if os.path.isfile(filename):
-                    print "Skipping already downloaded fragment %s" % filename
+                    log.debug("Skipping already downloaded fragment %s", filename)
                 else:
                     self.requestFragment(item)
         # update the playlist
@@ -468,7 +461,7 @@ class HlsProxy:
         self.refreshClientPlaylist()
         if playlist.endList:
             self.isFinished = True
-            print "VoD playlist detected (EXT-X-ENDLIST). Will stop after all fragments are downloaded."
+            log.info("VoD playlist detected (EXT-X-ENDLIST). Will stop after all fragments are downloaded.")
             self.checkFinished()
         else:
             # wind playlist timer (live streams only)
@@ -482,7 +475,7 @@ class HlsProxy:
 
         for variant in playlist.variants:
             subOutDir = self.outDir + str(variant.bandwidth)
-            print "Starting a sub hls-proxy for channel with bandwidth ", variant.bandwidth, " in directory ", subOutDir
+            log.info("Starting sub-proxy for bandwidth %s in %s", variant.bandwidth, subOutDir)
             make_p(subOutDir)
 
             masterVariant = copy.deepcopy(variant)
@@ -501,7 +494,7 @@ class HlsProxy:
             )
             relativePath = os.path.join(media.type, mediaRelative)
             subOutDir = os.path.join(self.outDir, relativePath)
-            print "Starting a sub hls-proxy for channel with bandwidth ", media.type, " in directory ", subOutDir
+            log.info("Starting sub-proxy for %s in %s", media.type, subOutDir)
             make_p(subOutDir)
 
             proxiedMedia = copy.deepcopy(media)
@@ -532,7 +525,7 @@ class HlsProxy:
         return subProxy
 
     def writeFile(self, filename, content):
-        print "cwd=", os.getcwd(), " writing file", filename
+        log.debug("Writing file %s", filename)
         f = open(filename, "w")
         f.write(content)
         f.flush()
@@ -604,7 +597,7 @@ class HlsProxy:
                 ritem.relativeUrl = self.getSegmentRelativeUrl(item)
                 pl.items.append(ritem)
             else:
-                print "Stopping playlist generation on itemFilename=", itemFilename
+                log.debug("Stopping playlist generation on itemFilename=%s", itemFilename)
                 break
         self.writeFile(self.getClientPlaylist(), pl.toStr())
         if self.save_individual_playlists:
@@ -635,17 +628,12 @@ class HlsProxy:
         return headers
 
     def onGetPlaylistError(self, e):
-        print "Error while getting the playlist: ", e
-        print "Retring after default interval of 2s"
+        log.error("Error while getting the playlist: %s. Retrying after 2s", e)
         self.reactor.callLater(2, self.retryPlaylist)
 
     def cbFragment(self, response, item):
-        if self.verbose:
-            print "Response version:", response.version
-            print "Response code:", response.code
-            print "Response phrase:", response.phrase
-            print "Response headers:"
-            print pformat(list(response.headers.getAllRawHeaders()))
+        log.debug("Fragment response: %s %s %s", response.version, response.code, response.phrase)
+        log.debug("Fragment headers: %s", pformat(list(response.headers.getAllRawHeaders())))
         d = self.reqQ.readBody(response)
         thiz = self
         d.addCallback(lambda b: thiz.cbFragmentBody(b, item))
@@ -663,11 +651,11 @@ class HlsProxy:
 
     def checkFinished(self):
         if self.isFinished and self.pendingFragments == 0:
-            print "All fragments downloaded. Stopping."
+            log.info("All fragments downloaded. Stopping.")
             self.finished.callback(None)
 
     def requestFragment(self, item):
-        print "Getting fragment from ", item.absoluteUrl
+        log.debug("Getting fragment from %s", item.absoluteUrl)
         self.pendingFragments += 1
         d = self.reqQ.request(
             "GET", item.absoluteUrl, Headers(self.httpHeaders()), None
@@ -678,7 +666,7 @@ class HlsProxy:
         return d
 
     def requestResource(self, url, localFilename):
-        print "Getting resource from ", url, " -> ", localFilename
+        log.debug("Getting resource from %s -> %s", url, localFilename)
         d = self.reqQ.request("GET", url, Headers(self.httpHeaders()), None)
         thiz = self
         d.addCallback(lambda r: thiz.cbRequestResource(r, localFilename))
@@ -712,13 +700,19 @@ def runProxy(reactor, args):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("hls_playlist")
-    parser.add_argument("-v", action="store_true")
+    parser.add_argument("-v", action="store_true", help="verbose output (debug level logging)")
     parser.add_argument("-d", action="store_true")
     parser.add_argument("--dump-durations", action="store_true")
     parser.add_argument("--save-individual-playlists", action="store_true")
     parser.add_argument("--referer")
     parser.add_argument("-o")
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.v else logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
     react(runProxy, [args])
 
