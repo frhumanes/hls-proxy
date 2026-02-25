@@ -37,4 +37,8 @@ Single-file application in `hlsproxy.py` with these key classes:
 - **HttpReqQ** — Sequential HTTP request queue wrapping Twisted's Agent. Ensures one request at a time with a 3-minute timeout per request.
 - **Data classes** — `HlsItem` (segment), `HlsVarian` (variant stream info), `HlsMedia` (alternate media track), `HlsEncryption` (key info).
 
-**Flow:** `main()` → `argparse` → `react(runProxy)` → `HlsProxy.run()` → polls playlist on `targetDuration` interval → downloads segments → writes local `.m3u8` and `.ts` files.
+**Flow:** `main()` → `argparse` → `react(runProxy)` → `HlsProxy.run()` → polls playlist on `targetDuration` interval → downloads segments → writes local `.m3u8` and `.ts` files. For VoD playlists (with `#EXT-X-ENDLIST`), the proxy stops automatically when all fragments are downloaded. For variant playlists, `DeferredList` waits for all sub-proxies to finish.
+
+## Production Deployment
+
+The tool is triggered via [webhook](https://github.com/adnanh/webhook) (Go) configured in `hooks.json`. The webhook service should run as a systemd unit (`/etc/systemd/system/webhook.service`) for automatic restarts and log management. See README.md for the full configuration.
