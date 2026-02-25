@@ -84,6 +84,7 @@ class HlsPlaylist:
         self.medias = []
         self.errors = []
         self.encryption = None
+        self.endList = False
 
     def getItem(self, mediaSequence):
         idx = mediaSequence - self.mediaSequence
@@ -115,6 +116,9 @@ class HlsPlaylist:
             line = lines[lineIdx]
             lineIdx += 1
             if line[0] == "#":
+                if line == "#EXT-X-ENDLIST":
+                    self.endList = True
+                    continue
                 keyValue = self.splitInTwo(line, ":")
                 key = keyValue[0]
                 value = keyValue[1] if len(keyValue) >= 2 else None
@@ -361,6 +365,8 @@ class HlsProxy:
         self.download = False
         self.outDir = ""
         self.encryptionHandled = False
+        self.isFinished = False
+        self.pendingFragments = 0
 
         # required for the dump durations functionality
         self.dur_dump_file = None
@@ -460,13 +466,19 @@ class HlsProxy:
         # update the playlist
         self.clientPlaylist = playlist
         self.refreshClientPlaylist()
-        # wind playlist timer
-        self.reactor.callLater(playlist.targetDuration, self.refreshPlaylist)
+        if playlist.endList:
+            self.isFinished = True
+            print "VoD playlist detected (EXT-X-ENDLIST). Will stop after all fragments are downloaded."
+            self.checkFinished()
+        else:
+            # wind playlist timer (live streams only)
+            self.reactor.callLater(playlist.targetDuration, self.refreshPlaylist)
 
     def onVariantPlaylist(self, playlist):
         # print "Found variant playlist."
         masterPlaylist = HlsPlaylist()
         masterPlaylist.version = playlist.version
+        subDeferreds = []
 
         for variant in playlist.variants:
             subOutDir = self.outDir + str(variant.bandwidth)
@@ -477,7 +489,8 @@ class HlsProxy:
             masterPlaylist.variants.append(masterVariant)
             masterVariant.absoluteUrl = str(variant.bandwidth) + "/stream.m3u8"
 
-            self.start_subproxy(subOutDir, variant.absoluteUrl)
+            subProxy = self.start_subproxy(subOutDir, variant.absoluteUrl)
+            subDeferreds.append(subProxy.finished)
 
         for imedia, media in enumerate(playlist.medias):
             # imedia is appended just in case greoup, name, language turn out to be the same after sanitization
@@ -497,9 +510,14 @@ class HlsProxy:
 
             if media.relativeUrl:
                 # EXT-X-MEDIA URI is optional so it's possible to have a media wihtout relativeUrl
-                self.start_subproxy(subOutDir, media.absoluteUrl)
+                subProxy = self.start_subproxy(subOutDir, media.absoluteUrl)
+                subDeferreds.append(subProxy.finished)
 
         self.writeFile(self.getClientPlaylist(), masterPlaylist.toStr())
+
+        if subDeferreds:
+            dl = defer.DeferredList(subDeferreds)
+            dl.addCallback(lambda _: self.finished.callback(None))
 
     def start_subproxy(self, subOutDir, hlsUrl):
         subProxy = HlsProxy(self.reactor)
@@ -635,15 +653,22 @@ class HlsProxy:
         return d
 
     def cbFragmentBody(self, body, item):
+        self.pendingFragments -= 1
         if not (self.clientPlaylist.getItem(item.mediaSequence) is None):
             self.writeFile(self.getSegmentFilename(item), body)
             self.dump_duration(self.getSegmentFilename(item), item)
-            # self.reactor.stop()
         # else old request
         self.refreshClientPlaylist()
+        self.checkFinished()
+
+    def checkFinished(self):
+        if self.isFinished and self.pendingFragments == 0:
+            print "All fragments downloaded. Stopping."
+            self.finished.callback(None)
 
     def requestFragment(self, item):
         print "Getting fragment from ", item.absoluteUrl
+        self.pendingFragments += 1
         d = self.reqQ.request(
             "GET", item.absoluteUrl, Headers(self.httpHeaders()), None
         )
