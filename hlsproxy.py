@@ -448,6 +448,14 @@ class HlsProxy:
 
     def onSegmentPlaylist(self, playlist):
         if playlist.mapAbsoluteUrl and not os.path.isfile(self.outDir + "init.mp4"):
+            # Format changed from MPEG-TS to fMP4: purge stale segments so they
+            # are re-downloaded in the correct format.
+            for stale in os.listdir(self.outDir):
+                if stale.endswith(".ts"):
+                    try:
+                        os.unlink(self.outDir + stale)
+                    except Exception:
+                        pass
             self.requestResource(playlist.mapAbsoluteUrl, self.outDir + "init.mp4")
         # deline old files
         if not (self.download):
