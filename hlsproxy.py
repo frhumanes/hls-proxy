@@ -714,6 +714,21 @@ def main():
         datefmt="%H:%M:%S",
     )
 
+    import urllib2
+    try:
+        req = urllib2.Request(
+            args.hls_playlist,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        resp = urllib2.urlopen(req)
+        resolved_url = resp.geturl()
+        resp.close()
+        if resolved_url != args.hls_playlist:
+            log.info("Redirect resuelto: %s -> %s", args.hls_playlist, resolved_url)
+            args.hls_playlist = resolved_url
+    except Exception as e:
+        log.warning("No se pudo resolver redirect: %s", e)
+
     react(runProxy, [args])
 
 
