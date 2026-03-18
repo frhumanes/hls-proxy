@@ -88,6 +88,7 @@ class HlsPlaylist:
         self.errors = []
         self.encryption = None
         self.endList = False
+        self.mapAbsoluteUrl = None
 
     def getItem(self, mediaSequence):
         idx = mediaSequence - self.mediaSequence
@@ -138,6 +139,10 @@ class HlsPlaylist:
                     lineIdx += 1
                 elif key == "#EXT-X-MEDIA":
                     self.handleMedia(value)
+                elif key == "#EXT-X-MAP":
+                    m = re.search(r'URI="([^"]+)"', value)
+                    if m:
+                        self.mapAbsoluteUrl = urlparse.urljoin(self.absoluteUrlBase, m.group(1))
                 elif key == "#EXTINF":
                     dur = float(value.split(",")[0])
                     url = lines[lineIdx]
@@ -245,6 +250,8 @@ class HlsPlaylist:
                 + self.encryption.uri
                 + "\n"
             )
+        if self.mapAbsoluteUrl:
+            res += '#EXT-X-MAP:URI="init.mp4"\n'
         for item in self.items:
             res += "#EXTINF:" + str(item.dur) + ",\n"
             res += item.relativeUrl + "\n"
@@ -440,6 +447,8 @@ class HlsProxy:
             self.onVariantPlaylist(playlist)
 
     def onSegmentPlaylist(self, playlist):
+        if playlist.mapAbsoluteUrl and not os.path.isfile(self.outDir + "init.mp4"):
+            self.requestResource(playlist.mapAbsoluteUrl, self.outDir + "init.mp4")
         # deline old files
         if not (self.download):
             for item in self.clientPlaylist.items:
@@ -590,6 +599,8 @@ class HlsProxy:
             pl.encryption = HlsEncryption()
             pl.encryption.method = playlist.encryption.method
             pl.encryption.uri = "key"
+        if playlist.mapAbsoluteUrl:
+            pl.mapAbsoluteUrl = playlist.mapAbsoluteUrl
         for item in playlist.items:
             itemFilename = self.getSegmentFilename(item)
             if os.path.isfile(itemFilename):
